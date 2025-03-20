@@ -1,3 +1,62 @@
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+from tensorflow.keras.models import Sequential,Model
+from tensorflow.keras.layers import LSTM, Dense, Dropout, Bidirectional, BatchNormalization
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.model_selection import train_test_split
+from scipy.signal import butter, filtfilt
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import classification_report, confusion_matrix, precision_score, recall_score, f1_score
+# Kết nối Google Drive
+from google.colab import drive
+drive.mount('/content/drive')
+# 1. Đọc dữ liệu
+train_file_path = "/content/drive/MyDrive/Datasetsmartphone/train.csv"
+test_file_path = "/content/drive/MyDrive/Datasetsmartphone/test.csv"
+
+train_data = pd.read_csv(train_file_path)
+test_data = pd.read_csv(test_file_path)
+
+# Kết hợp dữ liệu
+data = pd.concat([train_data, test_data]).reset_index(drop=True)
+# 2. Chọn nhiều đặc trưng hơn
+selected_features = [
+    'tBodyAcc-mean()-X', 'tBodyAcc-mean()-Y', 'tBodyAcc-mean()-Z',
+    'tBodyAcc-std()-X', 'tBodyAcc-std()-Y', 'tBodyAcc-std()-Z',
+    'tBodyGyro-mean()-X', 'tBodyGyro-mean()-Y', 'tBodyGyro-mean()-Z',
+    'tBodyGyro-std()-X', 'tBodyGyro-std()-Y', 'tBodyGyro-std()-Z'
+]
+
+X_values = data[selected_features].values
+# 3. Chuẩn hóa dữ liệu
+scaler = StandardScaler()
+X_values = scaler.fit_transform(X_values)
+# 4. Chuyển đổi nhãn thành số
+label_encoder = LabelEncoder()
+data['Activity'] = label_encoder.fit_transform(data['Activity'])
+y_values = data['Activity'].values
+# 5. Tạo chuỗi dữ liệu time-series
+TIME_STEPS = 30
+
+def create_sequences(data, labels=None, time_steps=TIME_STEPS):
+    sequences = []
+    labels_seq = [] if labels is not None else None
+    for i in range(len(data) - time_steps):
+        sequences.append(data[i:i + time_steps])
+        if labels is not None:
+            labels_seq.append(labels[i + time_steps - 1])
+
+    if labels is not None:
+        return np.array(sequences), np.array(labels_seq)
+    else:
+        return np.array(sequences), None
+
+X_seq, y_seq = create_sequences(X_values, y_values)
+# 6. Chia dữ liệu train/test
+X_train, X_test, y_train, y_test = train_test_split(X_seq, y_seq, test_size=0.2, random_state=42, stratify=y_seq)
 # 7. Xây dựng mô hình LSTM
 model = Sequential([
     Bidirectional(LSTM(128, return_sequences=True)),
@@ -22,3 +81,19 @@ model = Sequential([
 
     Dense(len(label_encoder.classes_), activation='softmax')
 ])
+# 8. Compile mô hình
+model.compile(
+    loss='sparse_categorical_crossentropy',
+    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3, clipnorm=1.0),
+    metrics=['accuracy']
+)
+# Khởi tạo input_shape cho mô hình để sử dụng MC Dropout
+X_dummy = np.zeros((1, TIME_STEPS, len(selected_features)))  # Tạo dữ liệu giả để gọi mô hình
+_ = model.predict(X_dummy)  # Gọi mô hình một lần để tránh lỗi
+# 9. Huấn luyện mô hình
+callbacks = [
+    EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True),
+    ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6)
+]
+
+history = model.fit(X_train, y_train, epochs=100, batch_size=64, validation_data=(X_test, y_test), callbacks=callbacks)
